@@ -482,95 +482,17 @@ class QuickBallActionHandler(
     }
 
     private fun lockScreen() {
-        // Custom: the "Lock Screen" option now runs a shell command instead of
-        // GLOBAL_ACTION_LOCK_SCREEN.
-        Thread {
-            val error = runShellCommand("settings put secure any_screen_running 1")
-            if (error != null) {
-                handler.post {
-                    showToast("Shell command failed: $error", performHaptic = true)
-                }
-            }
-        }.start()
-    }
-
-    /**
-     * Applies the `settings put secure any_screen_running 1` change.
-     *
-     * 1. Direct in-process write (instant; needs WRITE_SECURE_SETTINGS granted once via
-     *    `pm grant io.github.chayanforyou.quickball android.permission.WRITE_SECURE_SETTINGS`).
-     * 2. Root shell: the command is piped to `su`'s stdin (more compatible than `su -c`),
-     *    trying several `su` locations since KernelSU forks don't always expose `su` on PATH.
-     * 3. Plain shell.
-     *
-     * Returns null on success, or a short description of what went wrong.
-     */
-    private fun runShellCommand(command: String): String? {
-        val errors = mutableListOf<String>()
-
-        // Fastest path: write the setting directly in-process. Needs WRITE_SECURE_SETTINGS,
-        // which only has to be granted once from a root/adb shell:
-        //   pm grant io.github.chayanforyou.quickball android.permission.WRITE_SECURE_SETTINGS
         try {
             Settings.Secure.putInt(context.contentResolver, "any_screen_running", 1)
-            return null
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Missing WRITE_SECURE_SETTINGS", e)
+            showToast(
+                "adb shell pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS",
+                performHaptic = true
+            )
         } catch (e: Exception) {
-            Log.w(TAG, "Settings.Secure.putInt failed", e)
-            errors.add("no WRITE_SECURE_SETTINGS")
-        }
-
-        val suBinaries = listOf(
-            "su",
-            "/system/bin/su",
-            "/system/xbin/su",
-            "/sbin/su",
-            "/data/adb/ksu/bin/su",
-            "/data/adb/ap/bin/su",
-            "/data/adb/magisk/su"
-        )
-        for (su in suBinaries) {
-            try {
-                val process = ProcessBuilder(su).redirectErrorStream(true).start()
-                process.outputStream.bufferedWriter().use {
-                    it.write(command)
-                    it.write("\nexit\n")
-                    it.flush()
-                }
-                val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-                val exitCode = process.waitFor()
-                if (exitCode == 0 && !output.contains("Exception")) return null
-                Log.w(TAG, "'$su' exited with $exitCode: $output")
-                errors.add("$su exit $exitCode ${output.take(60)}".trim())
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to run '$su'", e)
-                errors.add("$su: ${shortError(e)}")
-            }
-        }
-
-        // No root: try a plain shell (works only if the device allows it).
-        try {
-            val process = ProcessBuilder("sh", "-c", command).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-            val exitCode = process.waitFor()
-            if (exitCode == 0 && !output.contains("Exception")) return null
-            Log.w(TAG, "sh exited with $exitCode: $output")
-            errors.add("sh exit $exitCode ${output.take(60)}".trim())
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to run sh", e)
-            errors.add("sh: ${shortError(e)}")
-        }
-
-        // Show every attempt, one per line, so it's clear which step failed and why.
-        return errors.joinToString("\n").take(400)
-    }
-
-    /** Short, readable reason for a failed exec, e.g. "error=2, No such file or directory". */
-    private fun shortError(e: Exception): String {
-        val message = e.message ?: return e.javaClass.simpleName
-        return if (message.contains("error=")) {
-            message.substringAfter("error=").take(60)
-        } else {
-            message.take(60)
+            Log.e(TAG, "Failed to lock screen", e)
+            showToast(e.javaClass.simpleName, performHaptic = true)
         }
     }
 
