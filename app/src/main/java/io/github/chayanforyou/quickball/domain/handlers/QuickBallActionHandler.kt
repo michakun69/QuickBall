@@ -495,19 +495,29 @@ class QuickBallActionHandler(
     }
 
     /**
-     * Runs [command] with root. Works with Magisk, KernelSU and APatch.
+     * Applies the `settings put secure any_screen_running 1` change.
      *
-     * The command is piped to the `su` shell's stdin (instead of using `su -c`),
-     * which is the most widely compatible way to run it. Several `su` locations are
-     * tried because KernelSU / APatch don't always expose `su` on the app's PATH.
-     * Falls back to a plain shell and finally to a direct settings write
-     * (works if WRITE_SECURE_SETTINGS was granted, e.g. via
-     * `adb shell pm grant io.github.chayanforyou.quickball android.permission.WRITE_SECURE_SETTINGS`).
+     * 1. Direct in-process write (instant; needs WRITE_SECURE_SETTINGS granted once via
+     *    `pm grant io.github.chayanforyou.quickball android.permission.WRITE_SECURE_SETTINGS`).
+     * 2. Root shell: the command is piped to `su`'s stdin (more compatible than `su -c`),
+     *    trying several `su` locations since KernelSU forks don't always expose `su` on PATH.
+     * 3. Plain shell.
      *
      * Returns null on success, or a short description of what went wrong.
      */
     private fun runShellCommand(command: String): String? {
         val errors = mutableListOf<String>()
+
+        // Fastest path: write the setting directly in-process. Needs WRITE_SECURE_SETTINGS,
+        // which only has to be granted once from a root/adb shell:
+        //   pm grant io.github.chayanforyou.quickball android.permission.WRITE_SECURE_SETTINGS
+        try {
+            Settings.Secure.putInt(context.contentResolver, "any_screen_running", 1)
+            return null
+        } catch (e: Exception) {
+            Log.w(TAG, "Settings.Secure.putInt failed", e)
+            errors.add("no WRITE_SECURE_SETTINGS")
+        }
 
         val suBinaries = listOf(
             "su",
@@ -550,17 +560,13 @@ class QuickBallActionHandler(
             errors.add("sh: ${e.message?.take(60)}")
         }
 
-        // Last resort: write the setting directly.
-        try {
-            Settings.Secure.putInt(context.contentResolver, "any_screen_running", 1)
-            return null
-        } catch (e: Exception) {
-            Log.w(TAG, "Settings.Secure.putInt failed", e)
-            errors.add("putInt: ${e.javaClass.simpleName}")
+        // Keep the toast readable: first error (direct write), the first su error, and the last.
+        val summary = if (errors.size > 3) {
+            listOf(errors[0], errors[1], errors.last()).joinToString(" | ")
+        } else {
+            errors.joinToString(" | ")
         }
-
-        // Keep the toast readable: show the first (su) error and the last one.
-        return if (errors.size > 2) "${errors.first()} … ${errors.last()}" else errors.joinToString(" | ")
+        return summary.take(180)
     }
 
     // -------------------- Auto Rotate --------------------
