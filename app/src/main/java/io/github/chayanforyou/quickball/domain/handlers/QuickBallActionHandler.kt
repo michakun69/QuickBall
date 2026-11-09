@@ -483,7 +483,7 @@ class QuickBallActionHandler(
 
     private fun lockScreen() {
         try {
-            Settings.Secure.putInt(context.contentResolver, "any_screen_running", 1)
+            Settings.Secure.putInt(context.contentResolver, "one_handed_mode_activated", 1)
         } catch (e: SecurityException) {
             Log.e(TAG, "Missing WRITE_SECURE_SETTINGS", e)
             showToast(
