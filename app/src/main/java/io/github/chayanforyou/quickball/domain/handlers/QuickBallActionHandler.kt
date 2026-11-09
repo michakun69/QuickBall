@@ -543,7 +543,7 @@ class QuickBallActionHandler(
                 errors.add("$su exit $exitCode ${output.take(60)}".trim())
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to run '$su'", e)
-                errors.add("$su: ${e.message?.take(60)}")
+                errors.add("$su: ${shortError(e)}")
             }
         }
 
@@ -557,16 +557,21 @@ class QuickBallActionHandler(
             errors.add("sh exit $exitCode ${output.take(60)}".trim())
         } catch (e: Exception) {
             Log.w(TAG, "Failed to run sh", e)
-            errors.add("sh: ${e.message?.take(60)}")
+            errors.add("sh: ${shortError(e)}")
         }
 
-        // Keep the toast readable: first error (direct write), the first su error, and the last.
-        val summary = if (errors.size > 3) {
-            listOf(errors[0], errors[1], errors.last()).joinToString(" | ")
+        // Show every attempt, one per line, so it's clear which step failed and why.
+        return errors.joinToString("\n").take(400)
+    }
+
+    /** Short, readable reason for a failed exec, e.g. "error=2, No such file or directory". */
+    private fun shortError(e: Exception): String {
+        val message = e.message ?: return e.javaClass.simpleName
+        return if (message.contains("error=")) {
+            message.substringAfter("error=").take(60)
         } else {
-            errors.joinToString(" | ")
+            message.take(60)
         }
-        return summary.take(180)
     }
 
     // -------------------- Auto Rotate --------------------
