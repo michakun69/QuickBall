@@ -485,36 +485,82 @@ class QuickBallActionHandler(
         // Custom: the "Lock Screen" option now runs a shell command instead of
         // GLOBAL_ACTION_LOCK_SCREEN.
         Thread {
-            val success = runShellCommand("settings put secure any_screen_running 1")
-            if (!success) {
+            val error = runShellCommand("settings put secure any_screen_running 1")
+            if (error != null) {
                 handler.post {
-                    showToast("Shell command failed (needs root/shell permission).", performHaptic = true)
+                    showToast("Shell command failed: $error", performHaptic = true)
                 }
             }
         }.start()
     }
 
     /**
-     * Runs [command] in a shell. Tries a plain shell first, then falls back to `su`
-     * for rooted devices. Returns true if the command exited with code 0.
+     * Runs [command] with root. Works with Magisk, KernelSU and APatch.
+     *
+     * The command is piped to the `su` shell's stdin (instead of using `su -c`),
+     * which is the most widely compatible way to run it. Several `su` locations are
+     * tried because KernelSU / APatch don't always expose `su` on the app's PATH.
+     * Falls back to a plain shell and finally to a direct settings write
+     * (works if WRITE_SECURE_SETTINGS was granted, e.g. via
+     * `adb shell pm grant io.github.chayanforyou.quickball android.permission.WRITE_SECURE_SETTINGS`).
+     *
+     * Returns null on success, or a short description of what went wrong.
      */
-    private fun runShellCommand(command: String): Boolean {
-        val attempts = listOf(
-            arrayOf("sh", "-c", command),
-            arrayOf("su", "-c", command)
+    private fun runShellCommand(command: String): String? {
+        val errors = mutableListOf<String>()
+
+        val suBinaries = listOf(
+            "su",
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/sbin/su",
+            "/data/adb/ksu/bin/su",
+            "/data/adb/ap/bin/su",
+            "/data/adb/magisk/su"
         )
-        for (cmd in attempts) {
+        for (su in suBinaries) {
             try {
-                val process = ProcessBuilder(*cmd).redirectErrorStream(true).start()
-                val output = process.inputStream.bufferedReader().use { it.readText() }
+                val process = ProcessBuilder(su).redirectErrorStream(true).start()
+                process.outputStream.bufferedWriter().use {
+                    it.write(command)
+                    it.write("\nexit\n")
+                    it.flush()
+                }
+                val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
                 val exitCode = process.waitFor()
-                if (exitCode == 0) return true
-                Log.w(TAG, "Command ${cmd.joinToString(" ")} exited with $exitCode: $output")
+                if (exitCode == 0 && !output.contains("Exception")) return null
+                Log.w(TAG, "'$su' exited with $exitCode: $output")
+                errors.add("$su exit $exitCode ${output.take(60)}".trim())
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to run ${cmd.joinToString(" ")}", e)
+                Log.w(TAG, "Failed to run '$su'", e)
+                errors.add("$su: ${e.message?.take(60)}")
             }
         }
-        return false
+
+        // No root: try a plain shell (works only if the device allows it).
+        try {
+            val process = ProcessBuilder("sh", "-c", command).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            val exitCode = process.waitFor()
+            if (exitCode == 0 && !output.contains("Exception")) return null
+            Log.w(TAG, "sh exited with $exitCode: $output")
+            errors.add("sh exit $exitCode ${output.take(60)}".trim())
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to run sh", e)
+            errors.add("sh: ${e.message?.take(60)}")
+        }
+
+        // Last resort: write the setting directly.
+        try {
+            Settings.Secure.putInt(context.contentResolver, "any_screen_running", 1)
+            return null
+        } catch (e: Exception) {
+            Log.w(TAG, "Settings.Secure.putInt failed", e)
+            errors.add("putInt: ${e.javaClass.simpleName}")
+        }
+
+        // Keep the toast readable: show the first (su) error and the last one.
+        return if (errors.size > 2) "${errors.first()} … ${errors.last()}" else errors.joinToString(" | ")
     }
 
     // -------------------- Auto Rotate --------------------
